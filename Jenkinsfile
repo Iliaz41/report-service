@@ -118,8 +118,7 @@ def runTests() {
         pip install --upgrade pip
         pip install pytest flask requests
         
-        echo "🧪 Запуск тестов..."
-        # Создаем простой тест, если их нет
+        echo "🧪 Создание тестов..."
         mkdir -p tests
         cat > tests/test_simple.py << 'EOF'
 def test_python():
@@ -135,6 +134,7 @@ def test_imports():
         assert False, f"Import failed: {e}"
 EOF
         
+        echo "🧪 Запуск тестов..."
         pytest tests/ -v --tb=short
     '''
 }
@@ -144,7 +144,7 @@ def buildDockerImage() {
         echo "🐳 Сборка Docker образа..."
         docker build -t ${SERVICE_NAME}:${BUILD_NUMBER} .
         
-        # Проверяем, что образ создан
+        echo "✅ Проверка созданного образа..."
         docker images | grep ${SERVICE_NAME} | grep ${BUILD_NUMBER}
         
         echo "✅ Образ собран: ${SERVICE_NAME}:${BUILD_NUMBER}"
@@ -166,10 +166,14 @@ def deployNewVersion() {
         
         echo "✅ Новый контейнер запущен"
         
-        # Проверяем, что контейнер работает
+        echo "🔍 Проверка статуса контейнера..."
         sleep 3
-        docker ps | grep ${SERVICE_NAME}
-    '''
+        docker ps | grep ${SERVICE_NAME} || {
+            echo "❌ Контейнер не запустился!"
+            docker logs ${SERVICE_NAME}
+            exit 1
+        }
+    """
 }
 
 def healthCheck() {
@@ -181,7 +185,7 @@ def healthCheck() {
         while (retryCount < maxRetries && !healthOk) {
             try {
                 sh """
-                    echo "Попытка ${retryCount + 1}/${maxRetries}..."
+                    echo "Попытка \${retryCount + 1}/${maxRetries}..."
                     curl -f http://localhost:${APP_PORT}/health
                 """
                 healthOk = true
@@ -193,7 +197,7 @@ def healthCheck() {
                     sleep(5)
                 } else {
                     echo "❌ Health check провален после ${maxRetries} попыток!"
-                    error "Health check failed"
+                    error "Health check failed - выполняю rollback"
                 }
             }
         }
@@ -204,12 +208,13 @@ def saveSuccessfulBuild() {
     sh """
         echo ${BUILD_NUMBER} > ${LAST_SUCCESS_FILE}
         echo "✅ Последняя успешная версия ${BUILD_NUMBER} сохранена в ${LAST_SUCCESS_FILE}"
-        cat ${LAST_SUCCESS_FILE}
+        echo "Содержимое файла: \$(cat ${LAST_SUCCESS_FILE})"
     """
 }
 
 def rollbackToPreviousVersion() {
     script {
+        // Читаем последнюю успешную версию
         def lastSuccessVersion = sh(
             script: "if [ -f ${LAST_SUCCESS_FILE} ]; then cat ${LAST_SUCCESS_FILE}; else echo '0'; fi",
             returnStdout: true
@@ -217,15 +222,19 @@ def rollbackToPreviousVersion() {
         
         echo "📦 Последняя успешная версия: ${lastSuccessVersion}"
         
-        if (lastSuccessVersion != "0" && lastSuccessVersion != "unknown") {
+        if (lastSuccessVersion != "0" && lastSuccessVersion != "unknown" && lastSuccessVersion != "") {
             sh """
                 echo "🔄 Выполняем rollback на версию ${lastSuccessVersion}..."
                 
                 # Проверяем существование образа
                 if docker images | grep -q "${SERVICE_NAME}.*${lastSuccessVersion}"; then
+                    echo "✅ Образ найден, выполняем откат..."
+                    
+                    # Останавливаем и удаляем текущий контейнер
                     docker stop ${SERVICE_NAME} || true
                     docker rm ${SERVICE_NAME} || true
                     
+                    # Запускаем предыдущую версию
                     docker run -d \\
                         -p ${APP_PORT}:${CONTAINER_PORT} \\
                         --name ${SERVICE_NAME} \\
@@ -234,15 +243,32 @@ def rollbackToPreviousVersion() {
                     
                     echo "✅ Rollback на версию ${lastSuccessVersion} выполнен"
                     
+                    # Проверяем, что контейнер запустился
                     sleep 5
-                    curl -f http://localhost:${APP_PORT}/health
+                    docker ps | grep ${SERVICE_NAME} || {
+                        echo "❌ Контейнер после rollback не запустился!"
+                        docker logs ${SERVICE_NAME}
+                        exit 1
+                    }
+                    
+                    # Проверяем health check
+                    echo "🔍 Проверка health после rollback..."
+                    curl -f http://localhost:${APP_PORT}/health || {
+                        echo "⚠️ Health check после rollback не пройден"
+                        exit 1
+                    }
+                    echo "✅ Health check после rollback пройден"
+                    
                 else
                     echo "❌ Образ версии ${lastSuccessVersion} не найден!"
+                    echo "Доступные образы:"
+                    docker images | grep ${SERVICE_NAME} || echo "Нет образов ${SERVICE_NAME}"
                     exit 1
                 fi
             """
         } else {
             echo "❌ Нет сохраненной успешной версии для rollback"
+            echo "Файл ${LAST_SUCCESS_FILE} не существует или пуст"
         }
     }
 }
