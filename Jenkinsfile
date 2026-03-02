@@ -116,17 +116,16 @@ pipeline {
 }
 
 def runTests() {
-    sh '''
+    sh """
         echo "========================================="
         echo "🧪 ЗАПУСК ТЕСТОВ"
         echo "========================================="
         
-        echo "🔍 Проверка Python:"
-        python --version
-        which python
+        echo "🔍 Проверка Python (используем найденный путь: ${PYTHON_PATH}):"
+        ${PYTHON_PATH} --version
         
         echo "\\n📦 Создание виртуального окружения..."
-        python -m venv venv
+        ${PYTHON_PATH} -m venv venv
         
         echo "\\n⚡ Активация виртуального окружения..."
         . venv/bin/activate
@@ -137,7 +136,7 @@ def runTests() {
         
         echo "\\n🧪 Запуск тестов..."
         pytest tests/ -v --tb=short
-    '''
+    """
 }
 
 def buildDockerImage() {
