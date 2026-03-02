@@ -14,8 +14,18 @@ pipeline {
         LAST_SUCCESS_FILE = 'last_successful_build.txt'
         APP_PORT = '8081'
         CONTAINER_PORT = '5000'
-        // Явно указываем PATH
-        PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
+        
+        // Автоматически находим где лежит Python
+        PYTHON_PATH = sh(
+            script: 'command -v python3 || command -v python || echo "/usr/bin/python3"',
+            returnStdout: true
+        ).trim()
+        
+        PYTHON_DIR = sh(
+            script: "dirname ${PYTHON_PATH}",
+            returnStdout: true
+        ).trim()
+        PATH = "${PYTHON_DIR}:/usr/local/bin:/usr/bin:/bin:${env.PATH}"
     }
     
     stages {
@@ -108,156 +118,25 @@ pipeline {
 def runTests() {
     sh '''
         echo "========================================="
-        echo "🔍 ДИАГНОСТИКА ОКРУЖЕНИЯ"
-        echo "========================================="
-        echo "Текущий пользователь: $(whoami)"
-        echo "Текущая директория: $(pwd)"
-        echo "HOME: $HOME"
-        echo "PATH: $PATH"
-        
-        echo "\\n📋 Поиск Python:"
-        which python || echo "python не найден в PATH"
-        which python3 || echo "python3 не найден в PATH"
-        which pip || echo "pip не найден в PATH"
-        which pip3 || echo "pip3 не найден в PATH"
-        
-        echo "\\n📋 Содержимое /usr/bin/python*:"
-        ls -la /usr/bin/python* 2>/dev/null || echo "Python не найден в /usr/bin"
-        
-        echo "\\n========================================="
-        echo "🔧 ВЫБОР PYTHON"
+        echo "🧪 ЗАПУСК ТЕСТОВ"
         echo "========================================="
         
-        # Пробуем найти Python
-        PYTHON_CMD=""
-        PIP_CMD=""
+        echo "🔍 Проверка Python:"
+        python --version
+        which python
         
-        # Список возможных путей к Python
-        for cmd in /usr/bin/python3 /usr/bin/python /usr/local/bin/python3 /usr/local/bin/python; do
-            if [ -f "$cmd" ]; then
-                PYTHON_CMD="$cmd"
-                echo "✅ Найден Python: $cmd"
-                break
-            fi
-        done
-        
-        # Если не нашли по путям, пробуем which
-        if [ -z "$PYTHON_CMD" ]; then
-            PYTHON_CMD=$(which python3 2>/dev/null || which python 2>/dev/null || echo "")
-            if [ -n "$PYTHON_CMD" ]; then
-                echo "✅ Найден Python через which: $PYTHON_CMD"
-            fi
-        fi
-        
-        if [ -z "$PYTHON_CMD" ]; then
-            echo "❌ CRITICAL: Python не найден!"
-            exit 1
-        fi
-        
-        echo "\\n📌 Использую Python: $PYTHON_CMD"
-        $PYTHON_CMD --version
-        
-        # Определяем pip
-        PIP_CMD="${PYTHON_CMD%python}pip"
-        if [ ! -f "$PIP_CMD" ]; then
-            PIP_CMD=$(which pip3 2>/dev/null || which pip 2>/dev/null || echo "")
-        fi
-        
-        echo "📌 Использую pip: $PIP_CMD"
-        
-        echo "\\n========================================="
-        echo "📦 СОЗДАНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ"
-        echo "========================================="
-        
-        # Удаляем старое venv если есть
-        rm -rf venv
-        
-        echo "📦 Создание виртуального окружения с $PYTHON_CMD..."
-        $PYTHON_CMD -m venv venv
-        
-        if [ ! -d "venv" ]; then
-            echo "❌ Не удалось создать виртуальное окружение!"
-            exit 1
-        fi
-        
-        echo "✅ Виртуальное окружение создано"
+        echo "\\n📦 Создание виртуального окружения..."
+        python -m venv venv
         
         echo "\\n⚡ Активация виртуального окружения..."
-        # Пробуем разные варианты активации
-        if [ -f "venv/bin/activate" ]; then
-            echo "Активация через venv/bin/activate"
-            . venv/bin/activate
-        elif [ -f "venv/Scripts/activate" ]; then
-            echo "Активация через venv/Scripts/activate"
-            . venv/Scripts/activate
-        else
-            echo "❌ Не найден файл активации!"
-            ls -la venv/ venv/bin/ 2>/dev/null || echo "Директория venv пуста"
-            exit 1
-        fi
-        
-        echo "✅ Виртуальное окружение активировано"
-        echo "Python после активации: $(which python)"
-        
-        echo "\\n📥 Обновление pip..."
-        python -m pip install --upgrade pip
+        . venv/bin/activate
         
         echo "\\n📥 Установка зависимостей..."
-        pip install pytest flask requests
+        pip install --upgrade pip
+        pip install -r requirements.txt
         
-        echo "\\n📋 Список установленных пакетов:"
-        pip list
-        
-        echo "\\n🧪 ПОДГОТОВКА ТЕСТОВ"
-        echo "========================================="
-        
-        # Создаем папку для тестов
-        mkdir -p tests
-        
-        # Создаем тестовый файл
-        cat > tests/test_simple.py << 'EOF'
-"""Простые тесты для проверки установки."""
-import sys
-
-def test_python():
-    """Проверка версии Python."""
-    assert sys.version_info.major == 3
-    assert sys.version_info.minor >= 8
-
-def test_imports():
-    """Проверка импорта библиотек."""
-    try:
-        import flask
-        import pytest
-        import requests
-        assert True
-    except ImportError as e:
-        assert False, f"Import failed: {e}"
-
-def test_flask_version():
-    """Проверка версии Flask."""
-    import flask
-    assert hasattr(flask, '__version__')
-EOF
-        
-        echo "✅ Тесты созданы:"
-        ls -la tests/
-        cat tests/test_simple.py
-        
-        echo "\\n🧪 ЗАПУСК ТЕСТОВ"
-        echo "========================================="
-        
-        # Запускаем тесты
-        python -m pytest tests/ -v --tb=short
-        
-        # Проверяем результат
-        TEST_RESULT=$?
-        if [ $TEST_RESULT -eq 0 ]; then
-            echo "✅ Все тесты пройдены успешно!"
-        else
-            echo "❌ Тесты не пройдены!"
-            exit $TEST_RESULT
-        fi
+        echo "\\n🧪 Запуск тестов..."
+        pytest tests/ -v --tb=short
     '''
 }
 
@@ -269,7 +148,6 @@ def buildDockerImage() {
         
         echo "📋 Проверка Docker:"
         docker --version
-        docker images
         
         echo "\\n🏗️ Сборка образа ${SERVICE_NAME}:${BUILD_NUMBER}..."
         docker build -t ${SERVICE_NAME}:${BUILD_NUMBER} .
